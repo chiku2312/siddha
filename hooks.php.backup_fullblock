@@ -1,0 +1,402 @@
+<?php
+if (!defined("WHMCS")) die("Access denied");
+
+use WHMCS\Database\Capsule;
+
+/**
+ * Add KYC menu to sidebar with dynamic status
+ */
+add_hook('ClientAreaPrimarySidebar', 1, function($primarySidebar) {
+    if (!is_null($primarySidebar)) {
+        $clientId = $_SESSION['uid'] ?? null;
+        
+        if (!$clientId) {
+            return;
+        }
+        
+        $client = Capsule::table('tblclients')
+            ->where('id', $clientId)
+            ->first();
+        
+        if (!$client) {
+            return;
+        }
+        
+        // Check KYC record for more detailed status
+        $kycRecord = Capsule::table('mod_kyc_aadhar')
+            ->where('client_id', $clientId)
+            ->first();
+        
+        $badgeHtml = '';
+        $label = 'KYC Verification';
+        
+        if ($kycRecord && $kycRecord->approval_status == 'approved') {
+            $badgeHtml = '<span class="badge" style="background:#28a745; color:white; padding:3px 8px; border-radius:3px; font-size:11px; margin-left:5px;">✓ Verified</span>';
+        } elseif ($kycRecord && $kycRecord->approval_status == 'pending') {
+            $badgeHtml = '<span class="badge" style="background:#ffc107; color:#000; padding:3px 8px; border-radius:3px; font-size:11px; margin-left:5px;">⏳ Pending</span>';
+        } elseif ($kycRecord && $kycRecord->approval_status == 'rejected') {
+            $badgeHtml = '<span class="badge" style="background:#dc3545; color:white; padding:3px 8px; border-radius:3px; font-size:11px; margin-left:5px;">✗ Rejected</span>';
+        } else {
+            $badgeHtml = '<span class="badge" style="background:#dc3545; color:white; padding:3px 8px; border-radius:3px; font-size:11px; margin-left:5px;">⚠ Not Verified</span>';
+        }
+        
+        $primarySidebar->addChild('kyc_verification', [
+            'label' => $label . ' ' . $badgeHtml,
+            'uri' => 'kyc.php',
+            'icon' => 'fas fa-id-card',
+            'order' => 1,
+        ]);
+    }
+});
+
+/**
+ * Add KYC status to Account Details page
+ */
+add_hook('ClientAreaPageAccountDetails', 1, function($vars) {
+    $clientId = $_SESSION['uid'] ?? null;
+    
+    if (!$clientId) {
+        return [];
+    }
+    
+    $kycRecord = Capsule::table('mod_kyc_aadhar')
+        ->where('client_id', $clientId)
+        ->first();
+    
+    $kycStatus = 'not_verified';
+    $kycStatusText = 'Not Verified';
+    $kycStatusColor = '#dc3545';
+    
+    if ($kycRecord) {
+        if ($kycRecord->approval_status == 'approved') {
+            $kycStatus = 'verified';
+            $kycStatusText = '✓ Verified';
+            $kycStatusColor = '#28a745';
+        } elseif ($kycRecord->approval_status == 'pending') {
+            $kycStatus = 'pending';
+            $kycStatusText = '⏳ Pending Approval';
+            $kycStatusColor = '#ffc107';
+        } elseif ($kycRecord->approval_status == 'rejected') {
+            $kycStatus = 'rejected';
+            $kycStatusText = '✗ Rejected';
+            $kycStatusColor = '#dc3545';
+        }
+    }
+    
+    return [
+        'kycStatus' => $kycStatus,
+        'kycStatusText' => $kycStatusText,
+        'kycStatusColor' => $kycStatusColor,
+        'kycApprovedAt' => ($kycRecord && $kycRecord->approved_at) ? date('d M Y, H:i', strtotime($kycRecord->approved_at)) : null,
+    ];
+});
+
+/**
+ * Inject KYC status display into Account Details page
+ */
+add_hook('ClientAreaPageAccountDetails', 10, function($vars) {
+    $clientId = $_SESSION['uid'] ?? null;
+    
+    if (!$clientId) {
+        return '';
+    }
+    
+    $kycRecord = Capsule::table('mod_kyc_aadhar')
+        ->where('client_id', $clientId)
+        ->first();
+    
+    if (!$kycRecord) {
+        $statusHtml = '<div style="background:#fff3cd; border-left:4px solid #ffc107; padding:15px; margin:20px 0; border-radius:5px;">
+            <strong style="color:#856404;">⚠️ KYC Not Verified</strong>
+            <p style="margin:5px 0 10px 0; color:#856404;">Please complete your KYC verification.</p>
+            <a href="kyc.php" style="background:#ffc107; color:#000; padding:8px 20px; border-radius:5px; text-decoration:none; display:inline-block; font-weight:600;">Verify Now →</a>
+        </div>';
+    } elseif ($kycRecord->approval_status == 'pending') {
+        $statusHtml = '<div style="background:#fff3cd; border-left:4px solid #ffc107; padding:15px; margin:20px 0; border-radius:5px;">
+            <strong style="color:#856404;">⏳ KYC Pending Approval</strong>
+            <p style="margin:5px 0 0 0; color:#856404;">Your KYC is submitted and awaiting admin approval.</p>
+            <p style="margin:5px 0 0 0; color:#666; font-size:13px;">Submitted: ' . date('d M Y, H:i', strtotime($kycRecord->verified_at)) . '</p>
+        </div>';
+    } elseif ($kycRecord->approval_status == 'approved') {
+        $statusHtml = '<div style="background:#d4edda; border-left:4px solid #28a745; padding:15px; margin:20px 0; border-radius:5px;">
+            <strong style="color:#155724;">✓ KYC Verified</strong>
+            <p style="margin:5px 0 0 0; color:#155724;">Your identity has been verified successfully.</p>
+            <p style="margin:5px 0 0 0; color:#666; font-size:13px;">Approved: ' . date('d M Y, H:i', strtotime($kycRecord->approved_at)) . '</p>
+        </div>';
+    } elseif ($kycRecord->approval_status == 'rejected') {
+        $statusHtml = '<div style="background:#f8d7da; border-left:4px solid #dc3545; padding:15px; margin:20px 0; border-radius:5px;">
+            <strong style="color:#721c24;">✗ KYC Rejected</strong>
+            <p style="margin:5px 0 10px 0; color:#721c24;">Your KYC verification was rejected. Please submit again.</p>
+            <a href="kyc.php" style="background:#dc3545; color:white; padding:8px 20px; border-radius:5px; text-decoration:none; display:inline-block; font-weight:600;">Submit Again →</a>
+        </div>';
+    }
+    
+    return [
+        'kycStatusHtml' => $statusHtml,
+    ];
+});
+
+/**
+ * Add KYC status banner to client area
+ */
+add_hook('ClientAreaFooterOutput', 1, function($vars) {
+    $clientId = $_SESSION['uid'] ?? null;
+    
+    if (!$clientId) {
+        return '';
+    }
+    
+    $client = Capsule::table('tblclients')
+        ->where('id', $clientId)
+        ->first();
+    
+    $kycRecord = Capsule::table('mod_kyc_aadhar')
+        ->where('client_id', $clientId)
+        ->first();
+    
+    // If verified, show nothing
+    if ($kycRecord && $kycRecord->approval_status == 'approved') {
+        return '';
+    }
+    
+    // If pending approval - yellow banner
+    if ($kycRecord && $kycRecord->approval_status == 'pending') {
+        return <<<HTML
+<style>
+.kyc-banner {
+    position: fixed;
+    top: 60px;
+    left: 0;
+    right: 0;
+    z-index: 9999;
+    background: linear-gradient(135deg, #f39c12 0%, #e67e22 100%);
+    color: white;
+    padding: 20px;
+    text-align: center;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+    animation: slideDown 0.5s ease;
+}
+.kyc-banner h3 {
+    margin: 0 0 10px 0;
+    font-size: 22px;
+    font-weight: bold;
+}
+.kyc-banner p {
+    margin: 0;
+    font-size: 16px;
+}
+@keyframes slideDown {
+    from { top: -100px; opacity: 0; }
+    to { top: 60px; opacity: 1; }
+}
+</style>
+<div class="kyc-banner">
+    <h3>⏳ KYC Verification Pending</h3>
+    <p>Your KYC is submitted and awaiting admin approval. You will be notified once approved.</p>
+</div>
+HTML;
+    }
+    
+    // Not verified - RED banner
+    return <<<HTML
+<style>
+.kyc-banner {
+    position: fixed;
+    top: 60px;
+    left: 0;
+    right: 0;
+    z-index: 9999;
+    background: linear-gradient(135deg, #dc3545 0%, #c82333 100%);
+    color: white;
+    padding: 25px;
+    text-align: center;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+    animation: slideDown 0.5s ease, pulse 2s infinite;
+}
+.kyc-banner h3 {
+    margin: 0 0 10px 0;
+    font-size: 24px;
+    font-weight: bold;
+    text-transform: uppercase;
+}
+.kyc-banner p {
+    margin: 0 0 15px 0;
+    font-size: 16px;
+}
+.kyc-banner-btn {
+    display: inline-block;
+    background: white;
+    color: #dc3545;
+    padding: 12px 30px;
+    border-radius: 5px;
+    text-decoration: none;
+    font-weight: bold;
+    font-size: 16px;
+    transition: all 0.3s;
+}
+.kyc-banner-btn:hover {
+    background: #f8f9fa;
+    transform: scale(1.05);
+    box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+}
+@keyframes slideDown {
+    from { top: -100px; opacity: 0; }
+    to { top: 60px; opacity: 1; }
+}
+@keyframes pulse {
+    0%, 100% { box-shadow: 0 4px 12px rgba(220, 53, 69, 0.5); }
+    50% { box-shadow: 0 4px 20px rgba(220, 53, 69, 0.8); }
+}
+</style>
+<div class="kyc-banner">
+    <h3>⚠️ KYC Verification Required</h3>
+    <p>Your KYC is not verified. Please complete verification to access all features.</p>
+    <a href="kyc.php" class="kyc-banner-btn">Verify Now →</a>
+</div>
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    var blockLinks = document.querySelectorAll('a:not([href*="kyc.php"]):not([href*="logout"]):not([href*="clientarea.php"])');
+    blockLinks.forEach(function(link) {
+        link.addEventListener('click', function(e) {
+            if (!confirm('Please complete KYC verification first. Click OK to verify now.')) {
+                e.preventDefault();
+            } else {
+                e.preventDefault();
+                window.location.href = 'kyc.php';
+            }
+        });
+    });
+});
+</script>
+HTML;
+});
+
+/**
+ * Inject KYC status box into account details page
+ */
+add_hook('ClientAreaFooterOutput', 5, function($vars) {
+    // Only on account details page
+    if (basename($_SERVER['PHP_SELF']) != 'clientarea.php' || ($_GET['action'] ?? '') != 'details') {
+        return '';
+    }
+    
+    $clientId = $_SESSION['uid'] ?? null;
+    if (!$clientId) {
+        return '';
+    }
+    
+    $kycRecord = Capsule::table('mod_kyc_aadhar')
+        ->where('client_id', $clientId)
+        ->first();
+    
+    $statusHtml = '';
+    
+    if (!$kycRecord) {
+        $statusHtml = '<div class="kyc-status-box not-verified">
+            <div class="kyc-status-icon">⚠️</div>
+            <div class="kyc-status-content">
+                <h4>KYC Not Verified</h4>
+                <p>Please complete your KYC verification to access all features.</p>
+                <a href="kyc.php" class="kyc-btn">Verify Now →</a>
+            </div>
+        </div>';
+    } elseif ($kycRecord->approval_status == 'pending') {
+        $statusHtml = '<div class="kyc-status-box pending">
+            <div class="kyc-status-icon">⏳</div>
+            <div class="kyc-status-content">
+                <h4>KYC Pending Approval</h4>
+                <p>Your KYC is submitted and awaiting admin approval.</p>
+                <p class="kyc-date">Submitted: ' . date('d M Y, H:i', strtotime($kycRecord->verified_at)) . '</p>
+            </div>
+        </div>';
+    } elseif ($kycRecord->approval_status == 'approved') {
+        $statusHtml = '<div class="kyc-status-box verified">
+            <div class="kyc-status-icon">✓</div>
+            <div class="kyc-status-content">
+                <h4>KYC Verified</h4>
+                <p>Your identity has been verified successfully.</p>
+                <p class="kyc-date">Approved: ' . date('d M Y, H:i', strtotime($kycRecord->approved_at)) . '</p>
+            </div>
+        </div>';
+    } elseif ($kycRecord->approval_status == 'rejected') {
+        $statusHtml = '<div class="kyc-status-box rejected">
+            <div class="kyc-status-icon">✗</div>
+            <div class="kyc-status-content">
+                <h4>KYC Rejected</h4>
+                <p>Your KYC verification was rejected. Please submit again.</p>
+                <a href="kyc.php" class="kyc-btn">Submit Again →</a>
+            </div>
+        </div>';
+    }
+    
+    return <<<HTML
+<style>
+.kyc-status-box {
+    margin: 20px 0;
+    padding: 20px;
+    border-radius: 10px;
+    display: flex;
+    align-items: center;
+    gap: 20px;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+}
+.kyc-status-box.verified {
+    background: linear-gradient(135deg, #d4edda 0%, #c3e6cb 100%);
+    border-left: 5px solid #28a745;
+}
+.kyc-status-box.pending {
+    background: linear-gradient(135deg, #fff3cd 0%, #ffeaa7 100%);
+    border-left: 5px solid #ffc107;
+}
+.kyc-status-box.not-verified, .kyc-status-box.rejected {
+    background: linear-gradient(135deg, #f8d7da 0%, #f5c6cb 100%);
+    border-left: 5px solid #dc3545;
+}
+.kyc-status-icon {
+    font-size: 48px;
+    flex-shrink: 0;
+}
+.kyc-status-content {
+    flex-grow: 1;
+}
+.kyc-status-content h4 {
+    margin: 0 0 8px 0;
+    font-size: 18px;
+    font-weight: 600;
+}
+.kyc-status-content p {
+    margin: 0;
+    font-size: 14px;
+}
+.kyc-date {
+    color: #666;
+    font-size: 13px !important;
+    margin-top: 5px !important;
+}
+.kyc-btn {
+    display: inline-block;
+    margin-top: 10px;
+    padding: 8px 20px;
+    background: linear-gradient(135deg, #667eea, #764ba2);
+    color: white;
+    text-decoration: none;
+    border-radius: 5px;
+    font-weight: 600;
+    transition: all 0.3s;
+}
+.kyc-btn:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+}
+</style>
+<script>
+jQuery(document).ready(function($) {
+    // Insert KYC status after Account Details heading
+    var kycStatusHtml = '{$statusHtml}';
+    if (kycStatusHtml && $('.panel-heading:contains("Account Details")').length) {
+        $('.panel-heading:contains("Account Details")').parent().find('.panel-body').prepend(kycStatusHtml);
+    }
+});
+</script>
+HTML;
+});

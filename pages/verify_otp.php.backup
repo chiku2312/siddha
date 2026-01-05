@@ -1,0 +1,119 @@
+<?php
+require_once __DIR__ . '/../lib/config.php';
+require_once __DIR__ . '/../lib/mysql.php';
+
+use WHMCS\Database\Capsule;
+
+if (!isset($_SESSION['user'])) {
+    header('Location: /clientarea.php');
+    exit();
+}
+
+$client = $_SESSION['user'];
+$otp = $_POST['otp'] ?? '';
+$refId = $_SESSION['kyc_ref'] ?? '';
+
+if (empty($otp) || empty($refId)) {
+    die('<div style="padding:50px; text-align:center;"><h2>Invalid Request</h2><a href="/kyc.php">← Back</a></div>');
+}
+
+// TEST MODE - Accept any 6-digit OTP
+if (KYC_TEST_MODE) {
+    if (strlen($otp) == 6 && is_numeric($otp)) {
+        $data = [
+            'name' => 'Test User ' . $client['firstname'],
+            'dob' => '01-01-1990',
+            'gender' => 'M',
+            'house' => 'Test House',
+            'street' => 'Test Street',
+            'locality' => 'Test Area',
+            'district' => 'Test District',
+            'state' => 'Test State',
+            'pincode' => '123456'
+        ];
+    } else {
+        die('<div style="padding:50px; text-align:center;"><h2>❌ Invalid OTP</h2><p>Please enter 6-digit OTP</p><a href="/kyc.php?action=step4">← Try Again</a></div>');
+    }
+} else {
+    // PRODUCTION MODE - Real API
+    $apiUrl = CASHFREE_API_BASE . '/verification/offline-aadhaar/verify';
+    
+    $curl = curl_init();
+    curl_setopt_array($curl, [
+        CURLOPT_URL => $apiUrl,
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT => 30,
+        CURLOPT_CUSTOMREQUEST => "POST",
+        CURLOPT_POSTFIELDS => json_encode(['ref_id' => $refId, 'otp' => $otp]),
+        CURLOPT_HTTPHEADER => [
+            "accept: application/json",
+            "content-type: application/json",
+	    "x-client-id: " . CASHFREE_KYC_CLIENT_ID,
+            "x-client-secret: " . CASHFREE_KYC_CLIENT_SECRET
+        ],
+    ]);
+    
+    $response = curl_exec($curl);
+    $httpCode = curl_getinfo($curl, CURLINFO_HTTP_CODE);
+    curl_close($curl);
+    
+    $data = json_decode($response, true);
+    
+    if ($httpCode != 200 || !isset($data['name'])) {
+        $errorMsg = $data['message'] ?? 'Invalid OTP';
+        die('<div style="padding:50px; text-align:center;"><h2>❌ Verification Failed</h2><p>' . htmlspecialchars($errorMsg) . '</p><a href="/kyc.php?action=step4">← Try Again</a></div>');
+    }
+}
+
+// Save KYC data
+try {
+    $existing = Capsule::table('mod_kyc_aadhar')->where('client_id', $client['id'])->first();
+    
+    if ($existing) {
+        die('<div style="padding:50px; text-align:center;"><h2>⚠️ Already Submitted</h2><p>Status: ' . $existing->approval_status . '</p><a href="/clientarea.php">← Dashboard</a></div>');
+    }
+    
+    Capsule::table('mod_kyc_aadhar')->insert([
+        'client_id' => $client['id'],
+        'ref_id' => $refId,
+        'status' => 'success',
+        'approval_status' => 'pending',
+        'name' => $data['name'] ?? '',
+        'dob' => $data['dob'] ?? '',
+        'address' => implode(', ', array_filter([
+            $data['house'] ?? '',
+            $data['street'] ?? '',
+            $data['locality'] ?? '',
+            $data['district'] ?? '',
+            $data['state'] ?? '',
+            $data['pincode'] ?? ''
+        ])),
+        'email' => $data['email'] ?? '',
+        'gender' => $data['gender'] ?? '',
+        'photo_link' => $data['photo_link'] ?? '',
+        'encrypted_data' => json_encode([
+            'test_mode' => KYC_TEST_MODE,
+            'aadhaar_masked' => '****-****-' . substr($_SESSION['kyc_aadhaar'] ?? '0000', -4),
+            'full_response' => $data
+        ]),
+        'verified_at' => date('Y-m-d H:i:s'),
+        'created_at' => date('Y-m-d H:i:s'),
+        'updated_at' => date('Y-m-d H:i:s'),
+    ]);
+    
+    unset($_SESSION['kyc_ref'], $_SESSION['kyc_aadhaar']);
+    
+    echo '<!DOCTYPE html><html><head><meta charset="UTF-8"><title>KYC Submitted</title>
+    <style>body{font-family:Arial;background:linear-gradient(135deg, #667eea 0%, #764ba2 100%);min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px;}.box{background:white;padding:50px;border-radius:20px;text-align:center;max-width:500px;box-shadow:0 20px 60px rgba(0,0,0,0.3);}.pending{font-size:80px;margin-bottom:20px;}h1{color:#ffc107;margin-bottom:15px;}p{color:#666;font-size:16px;line-height:1.6;}.btn{display:inline-block;margin-top:30px;padding:15px 40px;background:#667eea;color:white;text-decoration:none;border-radius:8px;font-size:16px;}.info{background:#fff3cd;padding:15px;border-radius:8px;margin:20px 0;font-size:14px;color:#856404;border:1px solid #ffc107;}</style>
+    </head><body><div class="box"><div class="pending">⏳</div><h1>KYC Submitted for Review</h1>
+    <p>Your Aadhaar verification was successful!</p><div class="info">
+    <strong>Name:</strong> ' . htmlspecialchars($data['name']) . '<br>
+    <strong>Status:</strong> Pending Admin Approval<br>
+    <strong>Mode:</strong> ' . (KYC_TEST_MODE ? 'TEST' : 'PRODUCTION') . '<br>
+    <strong>Submitted:</strong> ' . date('d M Y, H:i') . '</div>
+    <p style="font-size:14px;">Our team will review and approve within 24-48 hours.</p>
+    <a href="/clientarea.php" class="btn">Go to Dashboard →</a></div></body></html>';
+    
+} catch (Exception $e) {
+    die('<div style="padding:50px; text-align:center;"><h2>❌ Database Error</h2><p>' . htmlspecialchars($e->getMessage()) . '</p><a href="/kyc.php">← Try Again</a></div>');
+}
